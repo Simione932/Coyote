@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleExecutable</key>
+	<string>dglab_gui_v2</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.dglab.coyote2</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>Coyote V2</string>
+	<key>CFBundleDisplayName</key>
+	<string>Coyote V2</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1.0</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Coyote V2 scans for and connects to a DG-LAB Coyote 2 (ESTIM01) pulse host over Bluetooth so the light show follows your audio.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Coyote V2 analyses the audio input (BlackHole 2ch) to detect the dominant tone per channel and drive the waveform frequencies.</string>
+</dict>
+</plist>
