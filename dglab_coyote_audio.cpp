@@ -46,10 +46,10 @@
 //   freq_max_khz highest audio frequency considered, kHz (default: 10)
 //   smooth_ms   intensity smoothing time constant in ms, 0 = off (default: 0)
 //   a_mode      channel A mode: default (0), breath (1), waves (2), strobe (3),
-//   pulse (4), rainbow (5), or bass (6) (default: 0) b_mode      channel B
-//   mode: default (0), breath (1), waves (2), strobe (3), pulse (4), rainbow
-//   (5), or bass (6) (default: 0) idle_intensity baseline intensity applied to
-//   silent channels (no audio detected), 0..100 (default: 0)
+//   pulse (4), rainbow (5), bass (6), or spectrum (7) (default: 0) b_mode
+//   channel B mode: default (0), breath (1), waves (2), strobe (3), pulse (4),
+//   rainbow (5), bass (6), or spectrum (7) (default: 0) idle_intensity baseline
+//   intensity applied to silent channels (no audio detected), 0..100 (default: 0)
 //
 // Keys (while running):
 //   q   quit
@@ -386,10 +386,12 @@ int main(int argc, char **argv) {
              "(default: 0)\n");
       printf(
           "  a_mode      channel A mode: default (0), breath (1), waves (2), "
-          "strobe (3), pulse (4), rainbow (5), or bass (6) (default: 0)\n");
+          "strobe (3), pulse (4), rainbow (5), bass (6), or spectrum (7) "
+          "(default: 0)\n");
       printf(
           "  b_mode      channel B mode: default (0), breath (1), waves (2), "
-          "strobe (3), pulse (4), rainbow (5), or bass (6) (default: 0)\n");
+          "strobe (3), pulse (4), rainbow (5), bass (6), or spectrum (7) "
+          "(default: 0)\n");
       printf("  idle_intensity baseline intensity for silent channels, 0..100 "
              "(default: 0)\n");
       printf("Runs continuously; press q to quit.\n");

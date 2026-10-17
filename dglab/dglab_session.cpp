@@ -9,6 +9,7 @@
 #include <cstdarg>
 #include <cstring>
 #include <cstdlib>
+#include <mutex>
 
 #ifdef _WIN32
 #include <Windows.h>
@@ -356,6 +357,9 @@ bool CoyoteSession::streaming_loop() {
 
     WaveState state_a;
     WaveState state_b;
+    // Per-slot smoothing state for SPECTRUM mode (one EMA per B0 slot).
+    SpectrumState spec_state_a;
+    SpectrumState spec_state_b;
 
     const int period_ms = kPeriodMs;
 
@@ -379,15 +383,34 @@ bool CoyoteSession::streaming_loop() {
         const double llevel = smooth_level(&llevel_s, audio_->left_level.load(), smooth_ms, period_ms);
         const double rlevel = smooth_level(&rlevel_s, audio_->right_level.load(), smooth_ms, period_ms);
 
+        // SPECTRUM mode reads the per-channel log-spaced spectrum; copy it
+        // under the capture thread's lock so the vector is stable to read.
+        std::vector<float> lspec, rspec;
+        if (settings_->a_mode() == MODE_SPECTRUM || settings_->b_mode() == MODE_SPECTRUM) {
+            std::lock_guard<std::mutex> lock(audio_->spectrum_mutex);
+            lspec = audio_->left_spectrum;
+            rspec = audio_->right_spectrum;
+        }
+
         B0Command b0;
         uint8_t freq_a[4];
         uint8_t intens_a[4];
         uint8_t freq_b[4];
         uint8_t intens_b[4];
+        // SPECTRUM channels smooth their band groups with the dedicated
+        // Band-smooth setting; other modes use the global Smooth.
+        const double smooth_a =
+            settings_->a_mode() == MODE_SPECTRUM ? settings_->spectrum_smooth_ms()
+                                                 : smooth_ms;
+        const double smooth_b =
+            settings_->b_mode() == MODE_SPECTRUM ? settings_->spectrum_smooth_ms()
+                                                 : smooth_ms;
         channel_tick(state_a, settings_->a_mode(), lhz, llevel, idle, freq_min_khz, freq_max_khz,
-                     freq_a, intens_a);
+                     freq_a, intens_a, settings_->a_mode() == MODE_SPECTRUM ? &lspec : nullptr,
+                     settings_->a_mode() == MODE_SPECTRUM ? &spec_state_a : nullptr, smooth_a);
         channel_tick(state_b, settings_->b_mode(), rhz, rlevel, idle, freq_min_khz, freq_max_khz,
-                     freq_b, intens_b);
+                     freq_b, intens_b, settings_->b_mode() == MODE_SPECTRUM ? &rspec : nullptr,
+                     settings_->b_mode() == MODE_SPECTRUM ? &spec_state_b : nullptr, smooth_b);
         std::memcpy(b0.a_freq, freq_a, 4);
         std::memcpy(b0.a_intensity, intens_a, 4);
         std::memcpy(b0.b_freq, freq_b, 4);

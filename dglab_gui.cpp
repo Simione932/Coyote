@@ -28,6 +28,7 @@
 #include "dglab_protocol.h"
 #include "dglab_session.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdint>
@@ -97,11 +98,11 @@ static void draw_level_meter(mu_Context *ctx, mu_Rect r, double level,
 // radio-group of modes laid out in a single row; selects on click
 static void draw_mode_radios(mu_Context *ctx, int *mode,
                              const char *const names[], int n, double r_,
-                             double g, double b, int height) {
-  // Give every radio an equal cell. Cell width is a tunable const so we can
-  // adjust the spacing empirically without recomputing from the body width.
-  const int radio_cell = 61;
-  int widths[6];
+                             double g, double b, int height, int width) {
+  // Give every radio an equal cell that fills `width`. Capped so the row
+  // never gets looser than the original 61px cells.
+  const int radio_cell = std::min(61, width / n);
+  int widths[8];
   for (int i = 0; i < n; i++)
     widths[i] = radio_cell;
   mu_layout_row(ctx, n, widths, height);
@@ -171,7 +172,7 @@ static void draw_channel(mu_Context *ctx, const char *name, int channel,
     int mode = (channel == 0 ? g_settings.a_mode() : g_settings.b_mode());
     if (mode > dglab::MODE_DEFAULT)
       --mode;
-    draw_mode_radios(ctx, &mode, dglab::kModeNames + 1, 6, r_, g, b, 54);
+    draw_mode_radios(ctx, &mode, dglab::kModeNames + 1, 7, r_, g, b, 54, 392);
     if (channel == 0) {
       g_settings.set_a_mode(mode + 1);
     } else {
@@ -242,6 +243,20 @@ static void draw_global_settings(mu_Context *ctx) {
     mu_push_id(ctx, "smooth", 6);
     if (mu_slider_ex(ctx, &ms, 0, 10000, 10, "%.0f ms", 0) & MU_RES_CHANGE) {
       g_settings.set_smooth_ms(ms);
+    }
+    mu_pop_id(ctx);
+  }
+
+  // Band smooth (SPECTRUM mode per-band-group smoothing; independent of
+  // the global Smooth above)
+  {
+    float ms = static_cast<float>(g_settings.spectrum_smooth_ms());
+    int widths[2] = {110, -1};
+    mu_layout_row(ctx, 2, widths, 38);
+    draw_label(ctx, "Band smooth", mu_layout_next(ctx));
+    mu_push_id(ctx, "band_smooth", 11);
+    if (mu_slider_ex(ctx, &ms, 0, 10000, 10, "%.0f ms", 0) & MU_RES_CHANGE) {
+      g_settings.set_spectrum_smooth_ms(ms);
     }
     mu_pop_id(ctx);
   }

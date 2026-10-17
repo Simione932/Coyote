@@ -54,11 +54,12 @@ enum WaveformMode {
     MODE_PULSE = 4,
     MODE_RAINBOW = 5,
     MODE_BASS = 6,
+    MODE_SPECTRUM = 7,
 };
 
 // Display names for the waveform modes (shared by the CLI help text and the
 // GUI mode radios).
-extern const char* const kModeNames[7];
+extern const char* const kModeNames[8];
 
 // Parse a mode argument: accepts the mode name or its numeric id.
 int parse_mode_arg(const char* arg);
@@ -294,7 +295,7 @@ class CoyoteSettings {
 public:
     CoyoteSettings()
         : gain_a_(5), gain_b_(5), freq_min_khz_(0.02f), freq_max_khz_(10.0),
-          smooth_ms_(0.0), idle_intensity_(0.0),
+          smooth_ms_(0.0), spectrum_smooth_ms_(0.0), idle_intensity_(0.0),
           a_mode_(MODE_DEFAULT), b_mode_(MODE_DEFAULT) {}
 
     // Channel A (left) master strength, 0..200.
@@ -316,6 +317,13 @@ public:
     // Intensity smoothing time constant, ms; 0 = off. Range [0, 10000].
     double smooth_ms() const { return smooth_ms_.load(); }
     void set_smooth_ms(double ms) { smooth_ms_.store(clamp_smooth_ms(ms)); }
+
+    // Per-band-group smoothing for SPECTRUM mode, ms; 0 = off. Independent of
+    // the global Smooth above. Range [0, 10000].
+    double spectrum_smooth_ms() const { return spectrum_smooth_ms_.load(); }
+    void set_spectrum_smooth_ms(double ms) {
+        spectrum_smooth_ms_.store(clamp_smooth_ms(ms));
+    }
 
     // Baseline intensity applied to silent channels, 0..100.
     double idle_intensity() const { return idle_intensity_.load(); }
@@ -360,7 +368,7 @@ private:
     }
     static int clamp_mode(int v) {
         if (v < MODE_DEFAULT) return MODE_DEFAULT;
-        if (v > MODE_BASS) return MODE_BASS;
+        if (v > MODE_SPECTRUM) return MODE_SPECTRUM;
         return v;
     }
 
@@ -369,6 +377,7 @@ private:
     std::atomic<float> freq_min_khz_;
     std::atomic<float> freq_max_khz_;
     std::atomic<float> smooth_ms_;
+    std::atomic<float> spectrum_smooth_ms_;
     std::atomic<float> idle_intensity_;
     std::atomic<int> a_mode_;
     std::atomic<int> b_mode_;
@@ -384,15 +393,37 @@ struct WaveState {
     uint32_t cyclecount = 0;
 };
 
+// Per-channel smoothing state for SPECTRUM mode: one EMA accumulator per B0
+// slot (slot 0 = lowest band group .. slot 3 = highest), persisted across
+// ticks so the smoothing slider behaves like it does for the other modes.
+struct SpectrumState {
+    double slot_s[4] = {0.0, 0.0, 0.0, 0.0};
+};
+
+// Splits the log-spaced `spectrum` (kSpectrumBands bands, low..high, each
+// 0..1) into 4 equal groups, one per B0 slot, returning the max band energy
+// of each group (0..1). `out` must hold 4 floats. A null/short spectrum
+// yields zeros (silence).
+void spectrum_slot_energies(const std::vector<float>& spectrum, double out[4]);
+
 // Computes the four (frequency, intensity) pairs sent to `channel` (0 = A /
 // left, 1 = B / right) in one 100 ms tick. `state` must persist across ticks;
 // `level` is the (already smoothed) 0..1 loudness of the channel's dominant
 // tone and `hz` its frequency (0/0 when silent). The frequency is blended
 // with the detected audio pitch; the intensity scales with loudness and is
 // floored at the idle intensity.
+//
+// In MODE_SPECTRUM the four slots are repurposed as four band groups
+// (low..high) instead of four 25 ms sub-frames: each slot's intensity is that
+// group's spectrum energy (smoothed via `spectrum_state`), while the
+// frequency is still blended from the dominant pitch. `spectrum` is the
+// channel's log-spaced magnitude spectrum (kSpectrumBands bands, 0..1).
 void channel_tick(WaveState& state, int mode, double hz, double level,
                   double idle_intensity, double freq_min_khz, double freq_max_khz,
-                  uint8_t out_freq[4], uint8_t out_intensity[4]);
+                  uint8_t out_freq[4], uint8_t out_intensity[4],
+                  const std::vector<float>* spectrum = nullptr,
+                  SpectrumState* spectrum_state = nullptr,
+                  double smooth_ms = 0.0);
 inline void channel_tick(WaveState& state, int mode, double hz, double level,
                          double idle_intensity, double freq_max_khz,
                          uint8_t out_freq[4], uint8_t out_intensity[4]) {
