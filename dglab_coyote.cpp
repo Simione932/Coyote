@@ -263,20 +263,23 @@ bool uuid_is(const simpleble_uuid_t* uuid, const char* expected) {
     return true;
 }
 
-simpleble_err_t write_characteristic(simpleble_peripheral_t peripheral, simpleble_uuid_t service,
-                                     simpleble_uuid_t characteristic, const uint8_t* data,
-                                     size_t data_length) {
-    simpleble_err_t err = simpleble_peripheral_write_request(peripheral, service, characteristic, data, data_length);
-    if (err != SIMPLEBLE_SUCCESS) {
-        err = simpleble_peripheral_write_command(peripheral, service, characteristic, data, data_length);
+bool write_characteristic(simpleble_peripheral_t peripheral, simpleble_uuid_t service,
+                          simpleble_uuid_t characteristic, const uint8_t* data,
+                          size_t data_length) {
+    simpleble_error_t* err = nullptr;
+    simpleble_peripheral_write_request(peripheral, service, characteristic, data, data_length, &err);
+    if (err != nullptr) {
+        simpleble_peripheral_write_command(peripheral, service, characteristic, data, data_length,
+                                           &err);
     }
-    return err;
+    return err == nullptr;
 }
 
 void on_scan_found(simpleble_adapter_t, simpleble_peripheral_t peripheral, void*) {
-    char* name = simpleble_peripheral_identifier(peripheral);
-    char* address = simpleble_peripheral_address(peripheral);
-    int16_t rssi = simpleble_peripheral_rssi(peripheral);
+    simpleble_error_t* err = nullptr;
+    char* name = simpleble_peripheral_identifier(peripheral, &err);
+    char* address = simpleble_peripheral_address(peripheral, &err);
+    int16_t rssi = simpleble_peripheral_rssi(peripheral, &err);
 
     if (name != nullptr && std::strncmp(name, dglab::kNamePrefix, 3) == 0) {
         printf("  [DG-LAB] %s [%s] rssi=%d\n", name, address ? address : "?", rssi);
@@ -332,24 +335,25 @@ int run(int a_freq_ms, int b_freq_ms) {
     });
 
     // -- 1. Adapter ---------------------------------------------------------
-    if (!simpleble_adapter_is_bluetooth_enabled()) {
+    simpleble_error_t* err = nullptr;
+    if (!simpleble_adapter_is_bluetooth_enabled(&err)) {
         printf("Bluetooth is not enabled.\n");
         return 1;
     }
 
-    size_t adapter_count = simpleble_adapter_get_count();
+    size_t adapter_count = simpleble_adapter_get_count(&err);
     if (adapter_count == 0) {
         printf("No BLE adapter found.\n");
         return 1;
     }
 
-    g_ctx.adapter = simpleble_adapter_get_handle(0);
+    g_ctx.adapter = simpleble_adapter_get_handle(0, &err);
     if (g_ctx.adapter == nullptr) {
         printf("Failed to get adapter handle.\n");
         return 1;
     }
 
-    char* adapter_id = simpleble_adapter_identifier(g_ctx.adapter);
+    char* adapter_id = simpleble_adapter_identifier(g_ctx.adapter, &err);
     printf("Using adapter: %s (SimpleBLE %s)\n", adapter_id ? adapter_id : "?",
            simpleble_get_version());
     simpleble_free(adapter_id);
@@ -357,7 +361,7 @@ int run(int a_freq_ms, int b_freq_ms) {
     // -- 2. Scan ------------------------------------------------------------
     printf("Scanning for DG-LAB devices (10 s)...\n");
     simpleble_adapter_set_callback_on_scan_found(g_ctx.adapter, on_scan_found, nullptr);
-    simpleble_adapter_scan_for(g_ctx.adapter, 10000);
+    simpleble_adapter_scan_for(g_ctx.adapter, 10000, &err);
 
     if (g_ctx.found.empty()) {
         printf("No DG-LAB device found. Make sure the Coyote host is powered on.\n");
@@ -369,20 +373,20 @@ int run(int a_freq_ms, int b_freq_ms) {
     }
 
     g_ctx.peripheral = g_ctx.found[0];
-    char* name = simpleble_peripheral_identifier(g_ctx.peripheral);
-    char* address = simpleble_peripheral_address(g_ctx.peripheral);
+    char* name = simpleble_peripheral_identifier(g_ctx.peripheral, &err);
+    char* address = simpleble_peripheral_address(g_ctx.peripheral, &err);
     printf("Connecting to %s [%s]...\n", name ? name : "?", address ? address : "?");
     simpleble_free(name);
     simpleble_free(address);
 
     // -- 3. Connect ---------------------------------------------------------
-    if (simpleble_peripheral_connect(g_ctx.peripheral) != SIMPLEBLE_SUCCESS) {
+    simpleble_peripheral_connect(g_ctx.peripheral, &err);
+    if (err != nullptr) {
         printf("Failed to connect.\n");
         return 1;
     }
 
-    bool connected = false;
-    simpleble_peripheral_is_connected(g_ctx.peripheral, &connected);
+    bool connected = simpleble_peripheral_is_connected(g_ctx.peripheral, &err);
     printf("Connected: %s\n", connected ? "yes" : "no");
     if (!connected) {
         return 1;
@@ -397,9 +401,10 @@ int run(int a_freq_ms, int b_freq_ms) {
     bool have_battery = false;
     bool write_can_command = false;
 
-    for (size_t i = 0; i < simpleble_peripheral_services_count(g_ctx.peripheral); i++) {
-        simpleble_service_t service;
-        if (simpleble_peripheral_services_get(g_ctx.peripheral, i, &service) != SIMPLEBLE_SUCCESS) {
+    for (size_t i = 0; i < simpleble_peripheral_services_count(g_ctx.peripheral, &err); i++) {
+        simpleble_service_t service{};
+        simpleble_peripheral_services_get(g_ctx.peripheral, i, &service, &err);
+        if (err != nullptr) {
             continue;
         }
 
@@ -419,11 +424,12 @@ int run(int a_freq_ms, int b_freq_ms) {
                 have_battery = true;
             }
         }
+        simpleble_service_release(&service);
     }
 
     if (!have_write || !have_notify) {
         printf("FAIL: expected DG-LAB GATT layout (0x180C/0x150A + 0x150B) not found.\n");
-        simpleble_peripheral_disconnect(g_ctx.peripheral);
+        simpleble_peripheral_disconnect(g_ctx.peripheral, &err);
         return 1;
     }
     printf("GATT layout OK (write=%s, notify=%s, battery=%s)\n", have_write ? "yes" : "no",
@@ -434,8 +440,8 @@ int run(int a_freq_ms, int b_freq_ms) {
     simpleble_uuid_t char_notify = make_uuid(dglab::kCharNotify);
     simpleble_uuid_t char_battery = make_uuid(dglab::kCharBattery);
 
-    if (simpleble_peripheral_notify(g_ctx.peripheral, svc_main, char_notify, on_notify, nullptr) !=
-        SIMPLEBLE_SUCCESS) {
+    simpleble_peripheral_notify(g_ctx.peripheral, svc_main, char_notify, on_notify, nullptr, &err);
+    if (err != nullptr) {
         printf("WARN: failed to subscribe to 0x150B notifications.\n");
     } else {
         printf("Subscribed to 0x150B notifications.\n");
@@ -443,11 +449,10 @@ int run(int a_freq_ms, int b_freq_ms) {
 
     // -- 6. Read battery ----------------------------------------------------
     if (have_battery) {
-        uint8_t* data = nullptr;
         size_t data_length = 0;
-        if (simpleble_peripheral_read(g_ctx.peripheral, svc_battery, char_battery, &data,
-                                      &data_length) == SIMPLEBLE_SUCCESS &&
-            data != nullptr && data_length >= 1) {
+        uint8_t* data = simpleble_peripheral_read(g_ctx.peripheral, svc_battery, char_battery,
+                                                  &data_length, &err);
+        if (err == nullptr && data != nullptr && data_length >= 1) {
             g_ctx.battery = data[0];
             printf("Battery level: %d%%\n", data[0]);
             simpleble_free(data);
@@ -468,10 +473,10 @@ int run(int a_freq_ms, int b_freq_ms) {
 
     std::vector<uint8_t> bf_pkt = bf.encode();
     print_hex("BF write: ", bf_pkt.data(), bf_pkt.size());
-    if (write_characteristic(g_ctx.peripheral, svc_main, char_write, bf_pkt.data(),
-                             bf_pkt.size()) != SIMPLEBLE_SUCCESS) {
+    if (!write_characteristic(g_ctx.peripheral, svc_main, char_write, bf_pkt.data(),
+                              bf_pkt.size())) {
         printf("FAIL: BF write failed.\n");
-        simpleble_peripheral_disconnect(g_ctx.peripheral);
+        simpleble_peripheral_disconnect(g_ctx.peripheral, &err);
         return 1;
     }
     printf("BF write OK.\n");
@@ -542,9 +547,7 @@ int run(int a_freq_ms, int b_freq_ms) {
             print_hex("B0 write: ", pkt.data(), pkt.size());
         }
 
-        simpleble_err_t err = write_characteristic(g_ctx.peripheral, svc_main,
-                                                 char_write, pkt.data(), pkt.size());
-        if (err != SIMPLEBLE_SUCCESS) {
+        if (!write_characteristic(g_ctx.peripheral, svc_main, char_write, pkt.data(), pkt.size())) {
             printf("FAIL: B0 write failed at tick %d.\n", t);
             break;
         }
@@ -570,8 +573,8 @@ int run(int a_freq_ms, int b_freq_ms) {
     printf("Result: %s\n", pass ? "PASS" : "FAIL");
 
     // -- 10. Cleanup --------------------------------------------------------
-    simpleble_peripheral_unsubscribe(g_ctx.peripheral, svc_main, char_notify);
-    simpleble_peripheral_disconnect(g_ctx.peripheral);
+    simpleble_peripheral_unsubscribe(g_ctx.peripheral, svc_main, char_notify, &err);
+    simpleble_peripheral_disconnect(g_ctx.peripheral, &err);
     return pass ? 0 : 1;
 }
 

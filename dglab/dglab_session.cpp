@@ -45,14 +45,16 @@ bool uuid_is(const simpleble_uuid_t* uuid, const char* expected) {
     return true;
 }
 
-simpleble_err_t write_characteristic(simpleble_peripheral_t peripheral, simpleble_uuid_t service,
-                                     simpleble_uuid_t characteristic, const uint8_t* data,
-                                     size_t data_length) {
-    simpleble_err_t err = simpleble_peripheral_write_request(peripheral, service, characteristic, data, data_length);
-    if (err != SIMPLEBLE_SUCCESS) {
-        err = simpleble_peripheral_write_command(peripheral, service, characteristic, data, data_length);
+bool write_characteristic(simpleble_peripheral_t peripheral, simpleble_uuid_t service,
+                          simpleble_uuid_t characteristic, const uint8_t* data,
+                          size_t data_length) {
+    simpleble_error_t* err = nullptr;
+    simpleble_peripheral_write_request(peripheral, service, characteristic, data, data_length, &err);
+    if (err != nullptr) {
+        simpleble_peripheral_write_command(peripheral, service, characteristic, data, data_length,
+                                           &err);
     }
-    return err;
+    return err == nullptr;
 }
 
 void msleep(int ms) {
@@ -70,9 +72,10 @@ void msleep(int ms) {
 void CoyoteSession::on_scan_found(simpleble_adapter_t, simpleble_peripheral_t peripheral,
                                   void* user) {
     auto* self = static_cast<CoyoteSession*>(user);
-    char* name = simpleble_peripheral_identifier(peripheral);
-    char* address = simpleble_peripheral_address(peripheral);
-    int16_t rssi = simpleble_peripheral_rssi(peripheral);
+    simpleble_error_t* err = nullptr;
+    char* name = simpleble_peripheral_identifier(peripheral, &err);
+    char* address = simpleble_peripheral_address(peripheral, &err);
+    int16_t rssi = simpleble_peripheral_rssi(peripheral, &err);
     if (name != nullptr && std::strncmp(name, kNamePrefix, 3) == 0) {
         self->logf("  [DG-LAB] %s [%s] rssi=%d", name, address ? address : "?", rssi);
         self->found_.push_back(peripheral);
@@ -142,27 +145,28 @@ SessionStatus CoyoteSession::start() {
     found_.clear();
 
     // --- 0. Adapter -------------------------------------------------------
-    if (!simpleble_adapter_is_bluetooth_enabled()) {
+    simpleble_error_t* err = nullptr;
+    if (!simpleble_adapter_is_bluetooth_enabled(&err)) {
         logf("Bluetooth is not enabled.");
         running_.store(false);
         return SessionStatus::kNoAdapter;
     }
 
-    size_t adapter_count = simpleble_adapter_get_count();
+    size_t adapter_count = simpleble_adapter_get_count(&err);
     if (adapter_count == 0) {
         logf("No BLE adapter found.");
         running_.store(false);
         return SessionStatus::kNoAdapter;
     }
 
-    adapter_ = simpleble_adapter_get_handle(0);
+    adapter_ = simpleble_adapter_get_handle(0, &err);
     if (adapter_ == nullptr) {
         logf("Failed to get adapter handle.");
         running_.store(false);
         return SessionStatus::kNoAdapter;
     }
 
-    char* adapter_id = simpleble_adapter_identifier(adapter_);
+    char* adapter_id = simpleble_adapter_identifier(adapter_, &err);
     logf("Using adapter: %s (SimpleBLE %s)", adapter_id ? adapter_id : "?",
          simpleble_get_version());
     simpleble_free(adapter_id);
@@ -173,7 +177,7 @@ SessionStatus CoyoteSession::start() {
         logf("Scanning for DG-LAB devices (10 s)...");
         simpleble_adapter_set_callback_on_scan_found(
             adapter_, on_scan_found, this);
-        simpleble_adapter_scan_for(adapter_, 10000);
+        simpleble_adapter_scan_for(adapter_, 10000, &err);
     }
 
     if (found_.empty()) {
@@ -188,8 +192,8 @@ SessionStatus CoyoteSession::start() {
     }
 
     peripheral_ = found_[0];
-    char* name = simpleble_peripheral_identifier(peripheral_);
-    char* address = simpleble_peripheral_address(peripheral_);
+    char* name = simpleble_peripheral_identifier(peripheral_, &err);
+    char* address = simpleble_peripheral_address(peripheral_, &err);
     logf("Connecting to %s [%s]...", name ? name : "?", address ? address : "?");
     simpleble_free(name);
     simpleble_free(address);
@@ -227,7 +231,8 @@ SessionStatus CoyoteSession::start() {
 void CoyoteSession::stop() {
     stop_requested_.store(true);
     if (adapter_ != nullptr) {
-        simpleble_adapter_scan_stop(adapter_);
+        simpleble_error_t* err = nullptr;
+        simpleble_adapter_scan_stop(adapter_, &err);
     }
 }
 
@@ -237,14 +242,15 @@ void CoyoteSession::stop() {
 
 bool CoyoteSession::setup_device(SessionStatus* status) {
     // --- 3. Connect -------------------------------------------------------
-    if (simpleble_peripheral_connect(peripheral_) != SIMPLEBLE_SUCCESS) {
+    simpleble_error_t* err = nullptr;
+    simpleble_peripheral_connect(peripheral_, &err);
+    if (err != nullptr) {
         logf("Failed to connect.");
         *status = SessionStatus::kConnectFailed;
         return false;
     }
 
-    bool connected = false;
-    simpleble_peripheral_is_connected(peripheral_, &connected);
+    bool connected = simpleble_peripheral_is_connected(peripheral_, &err);
     logf("Connected: %s", connected ? "yes" : "no");
     if (!connected) {
         *status = SessionStatus::kConnectFailed;
@@ -260,9 +266,10 @@ bool CoyoteSession::setup_device(SessionStatus* status) {
     bool have_notify = false;
     bool have_battery = false;
 
-    for (size_t i = 0; i < simpleble_peripheral_services_count(peripheral_); i++) {
-        simpleble_service_t service;
-        if (simpleble_peripheral_services_get(peripheral_, i, &service) != SIMPLEBLE_SUCCESS) {
+    for (size_t i = 0; i < simpleble_peripheral_services_count(peripheral_, &err); i++) {
+        simpleble_service_t service{};
+        simpleble_peripheral_services_get(peripheral_, i, &service, &err);
+        if (err != nullptr) {
             continue;
         }
         logf("  service %s (%zu characteristics)", service.uuid.value,
@@ -280,11 +287,12 @@ bool CoyoteSession::setup_device(SessionStatus* status) {
                 have_battery = true;
             }
         }
+        simpleble_service_release(&service);
     }
 
     if (!have_write || !have_notify) {
         logf("FAIL: expected DG-LAB GATT layout (0x180C/0x150A + 0x150B) not found.");
-        simpleble_peripheral_disconnect(peripheral_);
+        simpleble_peripheral_disconnect(peripheral_, &err);
         *status = SessionStatus::kGattMissing;
         return false;
     }
@@ -295,8 +303,8 @@ bool CoyoteSession::setup_device(SessionStatus* status) {
     simpleble_uuid_t char_notify = make_uuid(kCharNotify);
     simpleble_uuid_t char_battery = make_uuid(kCharBattery);
 
-    if (simpleble_peripheral_notify(peripheral_, svc_main, char_notify, on_notify, this) !=
-        SIMPLEBLE_SUCCESS) {
+    simpleble_peripheral_notify(peripheral_, svc_main, char_notify, on_notify, this, &err);
+    if (err != nullptr) {
         logf("WARN: failed to subscribe to 0x150B notifications.");
     } else {
         logf("Subscribed to 0x150B notifications.");
@@ -304,11 +312,10 @@ bool CoyoteSession::setup_device(SessionStatus* status) {
 
     // --- 6. Read battery --------------------------------------------------
     if (have_battery) {
-        uint8_t* data = nullptr;
         size_t data_length = 0;
-        if (simpleble_peripheral_read(peripheral_, svc_battery, char_battery, &data,
-                                      &data_length) == SIMPLEBLE_SUCCESS &&
-            data != nullptr && data_length >= 1) {
+        uint8_t* data = simpleble_peripheral_read(peripheral_, svc_battery, char_battery,
+                                                  &data_length, &err);
+        if (err == nullptr && data != nullptr && data_length >= 1) {
             battery_.store(data[0]);
             logf("Battery level: %d%%", data[0]);
             simpleble_free(data);
@@ -324,10 +331,10 @@ bool CoyoteSession::setup_device(SessionStatus* status) {
     bf.b_soft_cap = kStrengthMax;
 
     std::vector<uint8_t> bf_pkt = bf.encode();
-    if (write_characteristic(peripheral_, svc_main, char_write, bf_pkt.data(),
-                             bf_pkt.size()) != SIMPLEBLE_SUCCESS) {
+    if (!write_characteristic(peripheral_, svc_main, char_write, bf_pkt.data(),
+                              bf_pkt.size())) {
         logf("FAIL: BF write failed.");
-        simpleble_peripheral_disconnect(peripheral_);
+        simpleble_peripheral_disconnect(peripheral_, &err);
         *status = SessionStatus::kStreamFailed;
         return false;
     }
@@ -425,9 +432,7 @@ bool CoyoteSession::streaming_loop() {
         b0.seq = (t % 5 == 0) ? 1 : 0;
 
         std::vector<uint8_t> pkt = b0.encode();
-        simpleble_err_t err = write_characteristic(peripheral_, svc_main,
-                                                   char_write, pkt.data(), pkt.size());
-        if (err != SIMPLEBLE_SUCCESS) {
+        if (!write_characteristic(peripheral_, svc_main, char_write, pkt.data(), pkt.size())) {
             logf("FAIL: B0 write failed at tick %d.", t);
             return false;
         }
@@ -449,8 +454,9 @@ void CoyoteSession::cleanup() {
     if (p_active != nullptr) {
         simpleble_uuid_t svc_main = make_uuid(kServiceMain);
         simpleble_uuid_t char_notify = make_uuid(kCharNotify);
-        simpleble_peripheral_unsubscribe(p_active, svc_main, char_notify);
-        simpleble_peripheral_disconnect(p_active);
+        simpleble_error_t* err = nullptr;
+        simpleble_peripheral_unsubscribe(p_active, svc_main, char_notify, &err);
+        simpleble_peripheral_disconnect(p_active, &err);
         simpleble_peripheral_release_handle(p_active);
     }
     for (auto p : found_) {

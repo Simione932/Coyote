@@ -868,20 +868,23 @@ bool uuid_is(const simpleble_uuid_t* uuid, const char* expected) {
     return true;
 }
 
-simpleble_err_t write_characteristic(simpleble_peripheral_t peripheral, simpleble_uuid_t service,
-                                     simpleble_uuid_t characteristic, const uint8_t* data,
-                                     size_t data_length) {
-    simpleble_err_t err = simpleble_peripheral_write_request(peripheral, service, characteristic, data, data_length);
-    if (err != SIMPLEBLE_SUCCESS) {
-        err = simpleble_peripheral_write_command(peripheral, service, characteristic, data, data_length);
+bool write_characteristic(simpleble_peripheral_t peripheral, simpleble_uuid_t service,
+                          simpleble_uuid_t characteristic, const uint8_t* data,
+                          size_t data_length) {
+    simpleble_error_t* err = nullptr;
+    simpleble_peripheral_write_request(peripheral, service, characteristic, data, data_length, &err);
+    if (err != nullptr) {
+        simpleble_peripheral_write_command(peripheral, service, characteristic, data, data_length,
+                                           &err);
     }
-    return err;
+    return err == nullptr;
 }
 
 void on_scan_found(simpleble_adapter_t, simpleble_peripheral_t peripheral, void*) {
-    char* name = simpleble_peripheral_identifier(peripheral);
-    char* address = simpleble_peripheral_address(peripheral);
-    int16_t rssi = simpleble_peripheral_rssi(peripheral);
+    simpleble_error_t* err = nullptr;
+    char* name = simpleble_peripheral_identifier(peripheral, &err);
+    char* address = simpleble_peripheral_address(peripheral, &err);
+    int16_t rssi = simpleble_peripheral_rssi(peripheral, &err);
 
     bool matches_coyote2 = false;
     if (name != nullptr && (std::strstr(name, "ESTIM01") != nullptr || std::strstr(name, "D-LAB") != nullptr)) {
@@ -890,15 +893,18 @@ void on_scan_found(simpleble_adapter_t, simpleble_peripheral_t peripheral, void*
 
     // Also check manufacturer data for DG-LAB manufacturer ID 0x1996 (0x96, 0x19)
     if (!matches_coyote2) {
-        size_t mfg_count = simpleble_peripheral_manufacturer_data_count(peripheral);
+        size_t mfg_count = simpleble_peripheral_manufacturer_data_count(peripheral, &err);
         for (size_t i = 0; i < mfg_count; i++) {
-            simpleble_manufacturer_data_t mfg;
-            if (simpleble_peripheral_manufacturer_data_get(peripheral, i, &mfg) == SIMPLEBLE_SUCCESS) {
-                if (mfg.manufacturer_id == 0x1996 ||
-                    (mfg.data_length >= 2 && mfg.data[0] == 0x96 && mfg.data[1] == 0x19)) {
-                    matches_coyote2 = true;
-                    break;
-                }
+            simpleble_manufacturer_data_t mfg{};
+            simpleble_peripheral_manufacturer_data_get(peripheral, i, &mfg, &err);
+            const bool hit = err == nullptr &&
+                             (mfg.manufacturer_id == 0x1996 ||
+                              (mfg.data_length >= 2 && mfg.data[0] == 0x96 &&
+                               mfg.data[1] == 0x19));
+            simpleble_manufacturer_data_release(&mfg);
+            if (hit) {
+                matches_coyote2 = true;
+                break;
             }
         }
     }
@@ -944,14 +950,15 @@ int run(int gain_a, int gain_b, int a_mode, int b_mode) {
     std::thread audio_thread(audio_capture_thread, &g_audio);
 
     // -- 2. Adapter ---------------------------------------------------------
-    if (!simpleble_adapter_is_bluetooth_enabled()) {
+    simpleble_error_t* err = nullptr;
+    if (!simpleble_adapter_is_bluetooth_enabled(&err)) {
         printf("Bluetooth is not enabled.\n");
         g_audio.running = false;
         if (audio_thread.joinable()) audio_thread.join();
         return 1;
     }
 
-    size_t adapter_count = simpleble_adapter_get_count();
+    size_t adapter_count = simpleble_adapter_get_count(&err);
     if (adapter_count == 0) {
         printf("No BLE adapter found.\n");
         g_audio.running = false;
@@ -959,7 +966,7 @@ int run(int gain_a, int gain_b, int a_mode, int b_mode) {
         return 1;
     }
 
-    g_ctx.adapter = simpleble_adapter_get_handle(0);
+    g_ctx.adapter = simpleble_adapter_get_handle(0, &err);
     if (g_ctx.adapter == nullptr) {
         printf("Failed to get adapter handle.\n");
         g_audio.running = false;
@@ -967,7 +974,7 @@ int run(int gain_a, int gain_b, int a_mode, int b_mode) {
         return 1;
     }
 
-    char* adapter_id = simpleble_adapter_identifier(g_ctx.adapter);
+    char* adapter_id = simpleble_adapter_identifier(g_ctx.adapter, &err);
     printf("Using adapter: %s (SimpleBLE %s)\n", adapter_id ? adapter_id : "?",
            simpleble_get_version());
     simpleble_free(adapter_id);
@@ -975,7 +982,7 @@ int run(int gain_a, int gain_b, int a_mode, int b_mode) {
     // -- 3. Scan ------------------------------------------------------------
     printf("Scanning for DG-LAB Coyote V2 devices (10 s)...\n");
     simpleble_adapter_set_callback_on_scan_found(g_ctx.adapter, on_scan_found, nullptr);
-    simpleble_adapter_scan_for(g_ctx.adapter, 10000);
+    simpleble_adapter_scan_for(g_ctx.adapter, 10000, &err);
 
     if (g_ctx.found.empty()) {
         printf("No DG-LAB Coyote V2 device found (looking for 'ESTIM01' / 0x1996).\n");
@@ -985,22 +992,22 @@ int run(int gain_a, int gain_b, int a_mode, int b_mode) {
     }
 
     g_ctx.peripheral = g_ctx.found[0];
-    char* name = simpleble_peripheral_identifier(g_ctx.peripheral);
-    char* address = simpleble_peripheral_address(g_ctx.peripheral);
+    char* name = simpleble_peripheral_identifier(g_ctx.peripheral, &err);
+    char* address = simpleble_peripheral_address(g_ctx.peripheral, &err);
     printf("Connecting to %s [%s]...\n", name ? name : "?", address ? address : "?");
     simpleble_free(name);
     simpleble_free(address);
 
     // -- 4. Connect ---------------------------------------------------------
-    if (simpleble_peripheral_connect(g_ctx.peripheral) != SIMPLEBLE_SUCCESS) {
+    simpleble_peripheral_connect(g_ctx.peripheral, &err);
+    if (err != nullptr) {
         printf("Failed to connect.\n");
         g_audio.running = false;
         if (audio_thread.joinable()) audio_thread.join();
         return 1;
     }
 
-    bool connected = false;
-    simpleble_peripheral_is_connected(g_ctx.peripheral, &connected);
+    bool connected = simpleble_peripheral_is_connected(g_ctx.peripheral, &err);
     printf("Connected: %s\n", connected ? "yes" : "no");
     if (!connected) {
         g_audio.running = false;
@@ -1017,9 +1024,10 @@ int run(int gain_a, int gain_b, int a_mode, int b_mode) {
     bool have_pattern_b = false;
     bool have_battery = false;
 
-    for (size_t i = 0; i < simpleble_peripheral_services_count(g_ctx.peripheral); i++) {
-        simpleble_service_t service;
-        if (simpleble_peripheral_services_get(g_ctx.peripheral, i, &service) != SIMPLEBLE_SUCCESS) {
+    for (size_t i = 0; i < simpleble_peripheral_services_count(g_ctx.peripheral, &err); i++) {
+        simpleble_service_t service{};
+        simpleble_peripheral_services_get(g_ctx.peripheral, i, &service, &err);
+        if (err != nullptr) {
             continue;
         }
 
@@ -1040,11 +1048,12 @@ int run(int gain_a, int gain_b, int a_mode, int b_mode) {
                 have_battery = true;
             }
         }
+        simpleble_service_release(&service);
     }
 
     if (!have_power || !have_pattern_a || !have_pattern_b) {
         printf("FAIL: expected Coyote V2 GATT layout (0x955a180b service) not found.\n");
-        simpleble_peripheral_disconnect(g_ctx.peripheral);
+        simpleble_peripheral_disconnect(g_ctx.peripheral, &err);
         g_audio.running = false;
         if (audio_thread.joinable()) audio_thread.join();
         return 1;
@@ -1059,7 +1068,8 @@ int run(int gain_a, int gain_b, int a_mode, int b_mode) {
     simpleble_uuid_t char_pattern_b = make_uuid(dglab2::kCharPatternB);
     simpleble_uuid_t char_battery = make_uuid(dglab2::kCharBattery);
 
-    if (simpleble_peripheral_notify(g_ctx.peripheral, svc_main, char_power, on_power_notify, nullptr) != SIMPLEBLE_SUCCESS) {
+    simpleble_peripheral_notify(g_ctx.peripheral, svc_main, char_power, on_power_notify, nullptr, &err);
+    if (err != nullptr) {
         printf("WARN: failed to subscribe to power notifications.\n");
     } else {
         printf("Subscribed to power notifications.\n");
@@ -1067,10 +1077,10 @@ int run(int gain_a, int gain_b, int a_mode, int b_mode) {
 
     // -- 7. Read battery ----------------------------------------------------
     if (have_battery) {
-        uint8_t* data = nullptr;
         size_t data_length = 0;
-        if (simpleble_peripheral_read(g_ctx.peripheral, svc_battery, char_battery, &data, &data_length) == SIMPLEBLE_SUCCESS &&
-            data != nullptr && data_length >= 1) {
+        uint8_t* data = simpleble_peripheral_read(g_ctx.peripheral, svc_battery, char_battery,
+                                                  &data_length, &err);
+        if (err == nullptr && data != nullptr && data_length >= 1) {
             g_ctx.battery = data[0];
             printf("Battery level: %d%%\n", data[0]);
             simpleble_free(data);
@@ -1267,8 +1277,8 @@ int run(int gain_a, int gain_b, int a_mode, int b_mode) {
     if (audio_thread.joinable()) audio_thread.join();
 
     // -- 9. Cleanup --------------------------------------------------------
-    simpleble_peripheral_unsubscribe(g_ctx.peripheral, svc_main, char_power);
-    simpleble_peripheral_disconnect(g_ctx.peripheral);
+    simpleble_peripheral_unsubscribe(g_ctx.peripheral, svc_main, char_power, &err);
+    simpleble_peripheral_disconnect(g_ctx.peripheral, &err);
     printf("Disconnected.\n");
     return 0;
 }
